@@ -14,11 +14,12 @@
  * The Original Code is gloda-snowl-twitter.
  *
  * The Initial Developer of the Original Code is
- * Mozilla Messaging, Inc..
+ * Mozilla Messaging, Inc.
  * Portions created by the Initial Developer are Copyright (C) 2008
  * the Initial Developer. All Rights Reserved.
  *
  * Contributor(s):
+ *  Andrew Sutherland <asutherland@asutherland.org>
  *
  * Alternatively, the contents of this file may be used under the terms of
  * either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -34,18 +35,75 @@
  * 
  * ***** END LICENSE BLOCK ***** */
 
+Components.utils.import("resource://gpsnitter/modules/acct_twitter.js");
+Components.utils.import("resource://gpsnitter/modules/index_twitter.js");
+
 var gpsnitter = {
   onLoad: function() {
-    // initialization code
-    this.initialized = true;
-    this.strings = document.getElementById("gpsnitter-strings");
+    if (!this.initialized) {
+      this.initialized = true;
+      this.strings = document.getElementById("gpsnitter-strings");
+      
+      this.evilInit();
+    }
   },
-  onMenuItemCommand: function(e) {
-    var promptService = Components.classes["@mozilla.org/embedcomp/prompt-service;1"]
-                                  .getService(Components.interfaces.nsIPromptService);
-    promptService.alert(window, this.strings.getString("helloMessageTitle"),
-                                this.strings.getString("helloMessage"));
+  
+  /**
+   * Consolidated evil actions.
+   */
+  evilInit: function () {
+    // we want our folder node in the tree, but a hack is currently required
+    this.oldAllModeFunc = gFolderTreeView._mapGenerators["all"];
+    gFolderTreeView._mapGenerators["all"] = this.evilWrappedAllModeFunc;
+    gFolderTreeView._rebuild();
   },
-
+  evilWrappedAllModeFunc: function() {
+    // (our "this" is not valid)
+    let rootNodes = gpsnitter.oldAllModeFunc();
+    // put it at the top for now... muahahaha.
+    rootNodes.unshift(gpsnitter.folderPaneNode);
+    return rootNodes;
+  },
+  
+  folderPaneNode: {
+    id: "twitter",
+    text: "Twitter",
+    level: 0,
+    open: false,
+    children: [],
+    /**
+     * @param aProperties An nsIproerties we need to set atoms on.
+     */
+    getProperties: function gpsnitter_folderPaneNode_getProperties(
+        aProperties) {
+      let atomSvc = Components.classes["@mozilla.org/atom-service;1"]
+                      .getService(Components.interfaces.nsIAtomService);
+      function addAtom(aName) {
+        aProperties.AppendElement(atomSvc.getAtom(aName));
+      }
+      addAtom("isServer-true");
+      addAtom("serverType-twitter");
+      addAtom("biffState-UnknownMail");
+      addAtom("noSelect-true");
+    },
+    command: function gpsnitter_folderPaneNode_doubleClick() {
+      dump("DOUBLE CLICK HANDLER!\n");
+      let account = new TwitterAccount();
+      account.getMessages();
+      dump("(done DOUBLE CLICK HANDLER!)\n");
+    },
+    // urgh, we need a fake _folder
+    _folder: {
+      glodaFolder: TwitterIndexer._twitterFolder,
+      isServer: true,
+      isCommandEnabled: function() { return false; },
+      prettyName: "Twitter",
+      server: {
+        performExpand: function() {},
+        prettyName: "Twitter",
+        type: "imap",
+      }
+    }
+  }
 };
 window.addEventListener("load", function(e) { gpsnitter.onLoad(e); }, false);

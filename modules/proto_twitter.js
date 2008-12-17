@@ -19,6 +19,7 @@
  *
  * Contributor(s):
  *   Myk Melez <myk@mozilla.org>
+ *   Andrew Sutherland <asutherland@asutherland.org>
  *
  * Alternatively, the contents of this file may be used under the terms of
  * either the GNU General Public License Version 2 or later (the "GPL"), or
@@ -34,6 +35,11 @@
  *
  * ***** END LICENSE BLOCK ***** */
 
+/*
+ * This module is taken from Snowl (https://hg.mozdev.org/snowl/) and has been
+ * modified to fit into a gloda-centric world view.
+ */
+
 let EXPORTED_SYMBOLS = ["SnowlTwitter"];
 
 const Cc = Components.classes;
@@ -43,28 +49,14 @@ const Cu = Components.utils;
 
 // modules that come with Firefox
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/ISO8601DateUtils.jsm");
 
 // modules that are generic
-Cu.import("resource://snowl/modules/log4moz.js");
-Cu.import("resource://snowl/modules/Observers.js");
-Cu.import("resource://snowl/modules/URI.js");
+Cu.import("resource://app/modules/gloda/log4moz.js");
 
-// modules that are Snowl-specific
-Cu.import("resource://snowl/modules/constants.js");
-Cu.import("resource://snowl/modules/datastore.js");
-Cu.import("resource://snowl/modules/source.js");
-Cu.import("resource://snowl/modules/target.js");
-Cu.import("resource://snowl/modules/identity.js");
-Cu.import("resource://snowl/modules/message.js");
-Cu.import("resource://snowl/modules/utils.js");
-Cu.import("resource://snowl/modules/service.js");
+Cu.import("resource://app/modules/gloda/indexer.js");
 
-const TYPE = "SnowlTwitter";
-const NAME = "Twitter";
-const MACHINE_URI = URI.get("https://twitter.com");
-// XXX Should this be simply http://twitter.com ?
-const HUMAN_URI = URI.get("http://twitter.com/home");
+
+try {
 
 /**
  * The HTTP authentication realm under which to save credentials via the login
@@ -108,92 +100,33 @@ const HUMAN_URI = URI.get("http://twitter.com/home");
  * but then we'd be putting passwords into URLs, which is considered harmful
  * because URLs leak into visible places (like the Error Console).
  */
-const AUTH_REALM = "Snowl";
+const AUTH_REALM = "Twitter";
 
 // This module is based on the API documented at http://apiwiki.twitter.com/.
 
-function SnowlTwitter(aID, aName, aMachineURI, aHumanURI, aUsername, aLastRefreshed, aImportance) {
-  SnowlSource.init.call(this, aID, aName, MACHINE_URI, HUMAN_URI, aUsername, aLastRefreshed, aImportance);
-  SnowlTarget.init.call(this);
+function SnowlTwitter(aUsername) {
+  this.username = aUsername;
 }
 
 SnowlTwitter.prototype = {
-  // The constructor property is defined automatically, but we destroy it
-  // when we redefine the prototype, so we redefine it here in case we ever
-  // need to check it to find out what kind of object an instance is.
-  constructor: SnowlTwitter,
-
-  _log: Log4Moz.repository.getLogger("Snowl.Twitter"),
-
-
-  //**************************************************************************//
-  // Abstract Class Composition Declarations
-
-  _classes: [SnowlSource, SnowlTarget],
-
-  implements: function(cls) {
-    return (this._classes.indexOf(cls) != -1);
-  },
-
+  // because of the way gloda's logging works, we need to use gloda as our root.
+  _log: Log4Moz.repository.getLogger("gloda.twitter.proto"),
 
   //**************************************************************************//
   // SnowlSource
 
   refreshInterval: 1000 * 60 * 3, // 3 minutes
 
-  id: null,
-  type: null,
-  name: null,
-  machineURI: null,
-  humanURI: null,
+  name: "Twitter",
+  machineURI: Cc["@mozilla.org/network/io-service;1"]
+                .getService(Ci.nsIIOService)
+                .newURI("https://twitter.com", undefined, undefined),
+  humanURI: Cc["@mozilla.org/network/io-service;1"]
+              .getService(Ci.nsIIOService)
+              .newURI("http://twitter.com/home", undefined, undefined),
   username: null,
-  _lastRefreshed: null,
-
-  get lastRefreshed() {
-    return SnowlSource.__lookupGetter__("lastRefreshed").call(this);
-  },
-
-  set lastRefreshed(newValue) {
-    return SnowlSource.__lookupSetter__("lastRefreshed").call(this, newValue);
-  },
 
   importance: null,
-
-  get faviconSvc() {
-    return SnowlSource.faviconSvc;
-  },
-
-  get faviconURI() {
-    return SnowlSource.__lookupGetter__("faviconURI").call(this);
-  },
-
-  // refresh is defined elsewhere.
-  //refresh: function(refreshTime) {},
-
-  persist: function() {
-    SnowlSource.persist.call(this);
-  },
-
-  get _stmtGetInternalIDForExternalID() {
-    return SnowlSource._stmtGetInternalIDForExternalID;
-  },
-
-  _getInternalIDForExternalID: function(externalID) {
-    return SnowlSource._getInternalIDForExternalID.call(this, externalID);
-  },
-
-  get _stmtInsertPart() {
-    return SnowlSource._stmtInsertPart;
-  },
-
-  get _stmtInsertPartText() {
-    return SnowlSource._stmtInsertPartText;
-  },
-
-  addPart: function(messageID, content, mediaType, partType, baseURI, languageTag) {
-    return SnowlSource.addPart.call(this, messageID, content, mediaType, partType, baseURI, languageTag);
-  },
-
 
   //**************************************************************************//
   // SnowlTarget
@@ -214,12 +147,14 @@ SnowlTwitter.prototype = {
   // the request succeeds, at which point we store it with the login manager.
   _authInfo: null,
 
+  /*
   get _loginManager() {
     let loginManager = Cc["@mozilla.org/login-manager;1"].
                        getService(Ci.nsILoginManager);
     this.__defineGetter__("_loginManager", function() loginManager);
     return this._loginManager;
   },
+  */
 
   /**
    * The saved credentials for this Twitter account, if any.
@@ -228,6 +163,7 @@ SnowlTwitter.prototype = {
    * its request and kill it once the request is done) or invalidate it when
    * the set of credentials changes.
    */
+  /*
   get _savedLogin() {
     // Alias this.username to a local variable because we can't use "this"
     // in the lambda expression we pass to the filter method below due to
@@ -242,10 +178,11 @@ SnowlTwitter.prototype = {
            filter(function(login) login.username == username)
            [0];
   },
+  */
 
   // nsISupports
 
-  QueryInterface: XPCOMUtils.generateQI([Ci.nsIAuthPrompt2]),
+  QueryInterface: XPCOMUtils.generateQI([]), //[Ci.nsIAuthPrompt2]),
 
   // nsIInterfaceRequestor
 
@@ -298,8 +235,6 @@ SnowlTwitter.prototype = {
 
   subscribed: false,
   subscribe: function(credentials) {
-    Observers.notify(this, "snowl:subscribe:connect:start", null);
-
     this.username = credentials.username;
     this.name = NAME + " - " + this.username;
 
@@ -345,8 +280,6 @@ SnowlTwitter.prototype = {
       return;
     }
 
-    Observers.notify(this, "snowl:subscribe:connect:end", request.status);
-
     // _authInfo only gets set if we prompted the user to authenticate
     // and the user checked the "remember password" box.  Since we're here,
     // it means the request succeeded, so we save the login.
@@ -373,7 +306,6 @@ SnowlTwitter.prototype = {
     try {statusText = request.statusText;} catch(ex) {statusText = "[no status text]"}
 
     this._log.error("onSubscribeError: " + request.status + " (" + statusText + ")");
-    Observers.notify(this, "snowl:subscribe:connect:end", request.status);
     this._resetSubscribeRequest();
   },
 
@@ -392,40 +324,7 @@ SnowlTwitter.prototype = {
 
   _refreshTime: null,
 
-  get _stmtGetMaxExternalID() {
-    let statement = SnowlDatastore.createStatement(
-      "SELECT MAX(externalID) AS maxID FROM messages WHERE sourceID = :sourceID"
-    );
-    this.__defineGetter__("_stmtGetMaxExternalID", function() statement);
-    return this._stmtGetMaxExternalID;
-  },
-
-  /**
-   * Get the maximum external ID of the messages received from this source.
-   * Newer messages always have larger integer IDs, so we can query for only
-   * new messages by specifying since_id=[max ID] in the refresh request.
-   *
-   * @returns  {Number}
-   *           the maximum external ID, if any
-   */
-  _getMaxExternalID: function() {
-    let maxID = null;
-
-    try {
-      this._stmtGetMaxExternalID.params.sourceID = this.id;
-      if (this._stmtGetMaxExternalID.step())
-        maxID = this._stmtGetMaxExternalID.row["maxID"];
-    }
-    finally {
-      this._stmtGetMaxExternalID.reset();
-    }
-
-    return maxID;
-  },
-
   refresh: function(refreshTime) {
-    Observers.notify(this, "snowl:subscribe:get:start", null);
-
     // Cache the refresh time so we can use it as the received time when adding
     // messages to the datastore.
     this._refreshTime = refreshTime;
@@ -446,10 +345,12 @@ SnowlTwitter.prototype = {
     params.push("count=200");
     // Retrieve only messages newer than the most recent one we've previously
     // retrieved.
+    /*
     let (maxID = this._getMaxExternalID()) {
       if (maxID)
         params.push("since_id=" + maxID);
     }
+    */
 
     let url = "https://twitter.com/statuses/friends_timeline.json?" + params.join("&");
     this._log.debug("refresh: this.name = " + this.name + "; url = " + url);
@@ -458,10 +359,12 @@ SnowlTwitter.prototype = {
     // If the login manager has saved credentials for this account, provide them
     // to the server.  Otherwise, no worries, Necko will automatically call our
     // notification callback, which will prompt the user to enter their credentials.
+    /*
     if (this._savedLogin) {
       let credentials = btoa(this.username + ":" + this._savedLogin.password);
       request.setRequestHeader("Authorization", "Basic " + credentials);
     }
+    */
 
     // Register a callback for notifications to handle authentication failures.
     // We do this whether or not we're providing credentials to the server via
@@ -508,10 +411,9 @@ SnowlTwitter.prototype = {
         this.username = this._authInfo.username;
         this.name = NAME + " - " + this._authInfo.username;
         this.persist();
-        Observers.notify(null, "snowl:sources:changed", null);
       }
 
-      this._saveLogin(this._authInfo);
+      //this._saveLogin(this._authInfo);
     }
 
     this._processRefresh(request.responseText);
@@ -530,59 +432,14 @@ SnowlTwitter.prototype = {
   },
 
   _processRefresh: function(responseText) {
-    this._log.debug("_processRefresh: this.name = " + this.name + "; responseText = " + responseText);
+    this._log.debug("_processRefresh: this.name = " + this.name);
 
     var JSON = Cc["@mozilla.org/dom/json;1"].createInstance(Ci.nsIJSON);
     let messages = JSON.decode(responseText);
 
-    let currentMessages = [];
-    let messagesChanged = false;
-
-    SnowlDatastore.dbConnection.beginTransaction();
-    try {
-      for each (let message in messages) {
-        let externalID = message.id;
-        let internalID = this._getInternalIDForExternalID(externalID);
-        if (internalID) {
-          currentMessages.push(internalID);
-          continue;
-        }
-
-        messagesChanged = true;
-        this._log.info(this.name + " adding message " + externalID);
-        internalID = this._addMessage(message, this._refreshTime);
-        currentMessages.push(internalID);
-      }
-
-      // Update the current flag.
-      // XXX Should this affect whether or not messages have changed?
-      SnowlDatastore.dbConnection.executeSimpleSQL(
-        "UPDATE messages SET current = 0 " +
-        "WHERE sourceID = " + this.id);
-      SnowlDatastore.dbConnection.executeSimpleSQL(
-        "UPDATE messages SET current = 1 " +
-        "WHERE id IN (" + currentMessages.join(", ") + ")");
-
-      SnowlDatastore.dbConnection.commitTransaction();
-    }
-    catch(ex) {
-      SnowlDatastore.dbConnection.rollbackTransaction();
-      throw ex;
-    }
-
-    if (messagesChanged)
-      Observers.notify(null, "snowl:messages:changed", this.id);
-
-    // Let observers know about the new source. Do it here, after messages
-    // added, to avoid timing/db commit issue when refreshing collections view
-    if (this.subscribed) {
-      Observers.notify(null, "snowl:sources:changed", null);
-      this.subscribed = false;
-    }
-
-    // FIXME: if we added people, refresh the collections view too.
-
-    Observers.notify(this, "snowl:subscribe:get:end", null);
+    let job = new IndexingJob("tweets", 1);
+    job.items = messages;
+    GlodaIndexer.indexJob(job);
   },
 
   _resetRefreshRequest: function() {
@@ -590,93 +447,11 @@ SnowlTwitter.prototype = {
     this._authInfo = null;
   },
 
-  _addMessage: function(message, aReceived) {
-    // We store the message text as both the subject and the content so that
-    // the content shows up in the Subject column of the list view.
-    // FIXME: make the list view automatically display some of the content
-    // if the subject is missing so we don't have to duplicate storage here.
-    let subject = message.text;
-
-    // Get an existing identity or create a new one.  Creating an identity
-    // automatically creates a person record with the provided name.
-    let identity = SnowlIdentity.get(this.id, message.user.id) ||
-                   SnowlIdentity.create(this.id,
-                                        message.user.id,
-                                        message.user.screen_name,
-                                        message.user.url,
-                                        message.user.profile_image_url);
-    // FIXME: update the identity record with the latest info about the person.
-    //identity.updateProperties(this.machineURI, message.user);
-    let authorID = identity.personID;
-
-    let timestamp = new Date(message.created_at);
-
-    // Add the message.
-    let messageID = this.addSimpleMessage(this.id, message.id, null, authorID, timestamp, aReceived, null);
-
-    // Add the message's content.
-    this.addPart(messageID, message.text, "text/plain");
-
-    // Add the message's metadata.
-    for (let [name, value] in Iterator(message)) {
-      // Ignore properties we have already handled specially.
-      // XXX Should we add them anyway, which is redundant info but lets others
-      // (who don't know about our special treatment) access them?
-      if (["user", "created_at", "text"].indexOf(name) != -1)
-        continue;
-
-      // FIXME: populate a "recipient" field with in_reply_to_user_id.
-
-      this._addMetadatum(messageID, name, value);
-    }
-
-    Observers.notify(SnowlMessage.get(messageID), "snowl:message:added", null);
-
-    return messageID;
-  },
-
-  // FIXME: Make the rest of this stuff be part of a superclass from which
-  // this class is derived.
-
-  /**
-   * Add a message with a single part to the datastore.
-   *
-   * @param aSourceID    {integer} the record ID of the message source
-   * @param aExternalID  {string}  the external ID of the message
-   * @param aSubject     {string}  the title of the message
-   * @param aAuthorID    {string}  the author of the message
-   * @param aTimestamp   {Date}    the date/time when the message was sent
-   * @param aReceived    {Date}    the date/time when the message was received
-   * @param aLink        {nsIURI}  a link to the content of the message,
-   *                               if the content is hosted on a server
-   *
-   * @returns {integer} the internal ID of the newly-created message
-   */
-  addSimpleMessage: function(aSourceID, aExternalID, aSubject, aAuthorID,
-                             aTimestamp, aReceived, aLink) {
-    let messageID =
-      SnowlDatastore.insertMessage(aSourceID,
-                                   aExternalID,
-                                   aSubject,
-                                   aAuthorID,
-                                   SnowlDateUtils.jsToJulianDate(aTimestamp),
-                                   SnowlDateUtils.jsToJulianDate(aReceived),
-                                   aLink ? aLink.spec : null);
-
-    return messageID;
-  },
-
-  _addMetadatum: function(aMessageID, aAttributeName, aValue) {
-    // FIXME: speed this up by caching the list of known attributes.
-    let attributeID = SnowlDatastore.selectAttributeID(aAttributeName)
-                      || SnowlDatastore.insertAttribute(aAttributeName);
-    SnowlDatastore.insertMetadatum(aMessageID, attributeID, aValue);
-  },
-
   // XXX Perhaps factor this out with the identical function in feed.js,
   // although this function supports multiple accounts with the same server
   // and doesn't allow the user to change their username, so maybe that's
   // not possible (or perhaps we can reconcile those differences).
+  /*
   _saveLogin: function(authInfo) {
     // Create a new login with the auth information we obtained from the user.
     let LoginInfo = new Components.Constructor("@mozilla.org/login-manager/loginInfo;1",
@@ -699,6 +474,7 @@ SnowlTwitter.prototype = {
     else
       this._loginManager.addLogin(newLogin);
   },
+  */
 
 
   //**************************************************************************//
@@ -708,8 +484,6 @@ SnowlTwitter.prototype = {
   _errorCallback: null,
 
   send: function(content, successCallback, errorCallback) {
-    Observers.notify(this, "snowl:send:start", null);
-
     let data = "status=" + encodeURIComponent(content);
     //          + "&in_reply_to_status_id=" + encodeURIComponent(inReplyToID);
 
@@ -808,4 +582,8 @@ SnowlTwitter.prototype = {
   }
 };
 
-SnowlService.addAccountType(SnowlTwitter);
+}
+catch (ex) {
+  dump("EXCEPTION DURING INIT: " + ex.fileName + ":" + ex.lineNumber + ": " +
+      ex + "\n");
+}

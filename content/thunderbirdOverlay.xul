@@ -39,7 +39,7 @@
 <!DOCTYPE overlay SYSTEM "chrome://gpsnitter/locale/gpsnitter.dtd">
 <overlay id="gpsnitter-overlay"
          xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul">
-  <script src="overlay.js"/>
+  <script src="overlay.js" type="application/javascript;version=1.8"/>
   <stringbundleset id="stringbundleset">
     <stringbundle id="gpsnitter-strings" src="chrome://gpsnitter/locale/gpsnitter.properties"/>
   </stringbundleset>
