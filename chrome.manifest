@@ -1,0 +1,4 @@
+content	gpsnitter	content/
+locale	gpsnitter	en-US	locale/en-US/
+skin	gpsnitter	classic/1.0	skin/
+overlay	chrome://messenger/content/messenger.xul	chrome://gpsnitter/content/thunderbirdOverlay.xul
